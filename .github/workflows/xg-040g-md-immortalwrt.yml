@@ -4,255 +4,142 @@ on:
   workflow_dispatch:
     inputs:
       repo_branch:
-        description: '选择编译分支'
+        description: "源码分支（插件组合按 OpenWrt 25.12 验证）"
         required: true
-        default: 'master-XG-040G-MD'
+        default: "openwrt-25.12-XG-040G-MD"
         type: choice
         options:
-          - master-XG-040G-MD
           - openwrt-25.12-XG-040G-MD
+
+permissions:
+  contents: read
 
 env:
   REPO_URL: https://github.com/fzs209/immortalwrt.git
-  # REPO_BRANCH 将由 workflow_dispatch 输入动态设置
   DEVICE_TARGET: airoha
   DEVICE_SUBTARGET: an7581
   CONFIG_FILE: config/xg-040g-md.config
-  CACHE_TOOLCHAIN: true
-  UPLOAD_BIN_DIR: false
-  FIRMWARE_RELEASE: true
   TZ: Asia/Shanghai
 
 jobs:
-  Build:
+  build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 360
     steps:
-    - name: Check Server Performance(检查服务器性能)
-      run: |
-        echo "警告⚠"
-        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
-        echo "--------------------------CPU信息--------------------------"
-        echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
-        echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
-        echo "--------------------------内存信息--------------------------"
-        echo "已安装内存详细信息："
-        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
-        echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+      - name: Checkout configuration repository
+        uses: actions/checkout@v4
 
-    - name: Initialization Environment(初始化环境)
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo bash -c 'bash <(curl -sL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
-        sudo -E apt -yqq install dos2unix
-        sudo -E apt -yqq install libfuse-dev
-        sudo -E apt -yqq autoremove --purge
-        sudo -E apt -yqq autoclean
-        sudo -E apt -yqq clean
-        sudo -E systemctl daemon-reload
-        sudo timedatectl set-timezone "$TZ"
+      - name: Initialize build environment
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eux
+          sudo bash -c 'bash <(curl -fsSL https://build-scripts.immortalwrt.org/init_build_environment.sh)'
+          sudo apt-get update
+          sudo apt-get install -y dos2unix libfuse-dev git rsync
+          sudo timedatectl set-timezone "$TZ"
 
-    - name: Combine Disks(合并磁盘)
-      uses: easimon/maximize-build-space@master
-      with:
-        swap-size-mb: 1024
-        temp-reserve-mb: 100
-        root-reserve-mb: 1024
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          swap-size-mb: 2048
+          temp-reserve-mb: 100
+          root-reserve-mb: 1024
 
-    - name: Checkout
-      uses: actions/checkout@main
+      - name: Clone target source
+        env:
+          REPO_BRANCH: ${{ inputs.repo_branch }}
+        run: |
+          set -eux
+          git clone --depth 1 "$REPO_URL" -b "$REPO_BRANCH" openwrt
+          echo "OPENWRT_PATH=$GITHUB_WORKSPACE/openwrt" >> "$GITHUB_ENV"
+          echo "REPO_BRANCH=$REPO_BRANCH" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$(git -C openwrt rev-parse HEAD)" >> "$GITHUB_ENV"
+          df -hT
 
-    - name: Clone Source Code(克隆源代码)
-      env:
-        REPO_BRANCH: ${{ github.event.inputs.repo_branch }}
-      run: |
-        df -hT $GITHUB_WORKSPACE
-        # 源码仓库是公开仓库，无需配置 REPO_TOKEN 密钥
-        git clone "$REPO_URL" -b "$REPO_BRANCH" openwrt
-        cd openwrt
-        echo "OPENWRT_PATH=$PWD" >> $GITHUB_ENV
-        VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
-        echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
-        echo "REPO_BRANCH=$REPO_BRANCH" >> $GITHUB_ENV
+      - name: Add compatible package sources
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          # Keep QModem; add PassWall and its matching core-package feed.
+          grep -q '^src-git qmodem ' feeds.conf.default || echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
+          grep -q '^src-git passwall_packages ' feeds.conf.default || echo 'src-git passwall_packages https://github.com/Openwrt-Passwall/openwrt-passwall-packages.git;main' >> feeds.conf.default
+          grep -q '^src-git passwall ' feeds.conf.default || echo 'src-git passwall https://github.com/Openwrt-Passwall/openwrt-passwall.git;main' >> feeds.conf.default
 
-    - name: Generate Variables(生成变量)
-      run: |
-        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
-        echo "RELEASE_TAG=XG-040G-MD-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
+          mkdir -p package/custom
+          git clone --depth 1 -b openwrt-25.12 https://github.com/sbwml/luci-theme-argon.git /tmp/luci-theme-argon
+          test -f /tmp/luci-theme-argon/luci-theme-argon/Makefile
+          cp -a /tmp/luci-theme-argon/luci-theme-argon package/custom/
 
-    - name: Cache Toolchain(缓存工具链)
-      if: env.CACHE_TOOLCHAIN == 'true'
-      uses: HiGarfield/cachewrtbuild@main
-      with:
-        ccache: false
-        mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
-        prefix: ${{ env.OPENWRT_PATH }}
-    
-    - name: Add QModem Feed(添加QModem软件源)
-      run: |
-        cd $OPENWRT_PATH
-        grep -q '^src-git qmodem https://github.com/FUjr/QModem.git;main
+          git clone --depth 1 https://github.com/sirpdboy/luci-app-adguardhome.git /tmp/luci-app-adguardhome
+          test -f /tmp/luci-app-adguardhome/luci-app-adguardhome/Makefile
+          cp -a /tmp/luci-app-adguardhome/luci-app-adguardhome package/custom/
 
-    - name: Load Custom Configuration(加载自定义配置)
-      run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        make defconfig
-        grep "CONFIG_PACKAGE_luci-app-airoha-npu" .config || echo "WARNING: option missing!"
+          git clone --depth 1 https://github.com/vernesong/OpenClash.git /tmp/OpenClash
+          test -f /tmp/OpenClash/luci-app-openclash/Makefile
+          cp -a /tmp/OpenClash/luci-app-openclash package/custom/
 
-    - name: Download DL Package(下载DL软件包)
-      run: |
-        cd $OPENWRT_PATH
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
+      - name: Update and install feeds
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          ./scripts/feeds install -a -p qmodem
+          ./scripts/feeds install -a -p passwall_packages
+          ./scripts/feeds install -a -p passwall
 
-    - name: Compile Firmware(开始编译固件)
-      id: compile
-      run: |
-        cd $OPENWRT_PATH
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
+      - name: Load device configuration and validate package symbols
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
+          make defconfig
+          grep -q '^CONFIG_TARGET_airoha=y' .config
+          grep -q '^CONFIG_TARGET_airoha_an7581=y' .config
+          grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_bell_xg-040g-md=y' .config
+          for pkg in qmodem luci-app-qmodem-next luci-app-adguardhome adguardhome luci-theme-argon luci-app-nlbwmon luci-app-statistics luci-app-ttyd luci-app-sqm luci-app-homeproxy luci-app-passwall luci-app-openclash; do
+            if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
+              echo "Selected: ${pkg}"
+            else
+              echo "WARNING: ${pkg} is not selected or unavailable in this source tree"
+            fi
+          done
+          cp .config "$GITHUB_WORKSPACE/build.config"
+          echo "Selected package count: $(grep -c '^CONFIG_PACKAGE_.*=y' .config || true)"
 
-    - name: Check Space Usage(检查空间使用情况)
-      if: (!cancelled())
-      run: df -hT
+      - name: Download sources
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          make download -j8
+          find dl -size -1024c -print -delete || true
 
-    - name: Upload Bin Directory(上传固件)
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
+      - name: Compile firmware
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          make -j"$(nproc)" || make -j1 V=s
 
-    - name: Organize Files(整理文件)
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        echo "VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+      - name: Inspect firmware outputs
+        if: success()
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          df -hT
+          find bin/targets/airoha/an7581 -maxdepth 2 -type f -printf '%s %p\n' | sort -n
+          test -f bin/targets/airoha/an7581/sha256sums
+          cp .config bin/targets/airoha/an7581/build.config
+          cp "$GITHUB_WORKSPACE/PLUGIN-INTEGRATION.md" bin/targets/airoha/an7581/PLUGIN-INTEGRATION.md
+          (cd bin/targets/airoha/an7581 && sha256sum *.bin *.tar 2>/dev/null || true) > bin/targets/airoha/an7581/custom-sha256sums.txt
 
-    - name: Upload Firmware To Artifact(将固件上传到Artifact)
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
-
-    - name: Upload Firmware To Release(发布固件)
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ env.RELEASE_TAG }}
-        tag: ${{ env.RELEASE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is OpenWrt Firmware for XG-040G-MD**
-          ### 📒 固件信息(XG-040G-MD)
-          - 这是 XG-040G-MD 的专属构建
-          - 💻 目标分支：${{ env.REPO_BRANCH }}
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 🌐 默认地址: 192.168.1.1
-          - 🔑 默认密码: 无
-          ### 🧊 固件版本
-          - 固件内核版本：${{ env.VERSION_KERNEL }}
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.VERSION_INFO }}
- feeds.conf.default || echo 'src-git qmodem https://github.com/FUjr/QModem.git;main' >> feeds.conf.default
-
-    - name: Install Feeds(安装feeds)
-      run: |
-        cd $OPENWRT_PATH
-        ./scripts/feeds update -a
-        ./scripts/feeds install -a
-        ./scripts/feeds install -a -p qmodem
-
-    - name: Load Custom Configuration(加载自定义配置)
-      run: |
-        [ -e $CONFIG_FILE ] && mv $CONFIG_FILE $OPENWRT_PATH/.config
-        cd $OPENWRT_PATH
-        make defconfig
-        grep "CONFIG_PACKAGE_luci-app-airoha-npu" .config || echo "WARNING: option missing!"
-
-    - name: Download DL Package(下载DL软件包)
-      run: |
-        cd $OPENWRT_PATH
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Compile Firmware(开始编译固件)
-      id: compile
-      run: |
-        cd $OPENWRT_PATH
-        echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
-
-    - name: Check Space Usage(检查空间使用情况)
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload Bin Directory(上传固件)
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
-
-    - name: Organize Files(整理文件)
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        echo "VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
-
-    - name: Upload Firmware To Artifact(将固件上传到Artifact)
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE != 'true'
-      uses: actions/upload-artifact@main
-      with:
-        name: ${{ env.SOURCE_REPO }}-firmware-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.FIRMWARE_PATH }}
-
-    - name: Upload Firmware To Release(发布固件)
-      if: steps.compile.outputs.status == 'success' && env.FIRMWARE_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ env.RELEASE_TAG }}
-        tag: ${{ env.RELEASE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is OpenWrt Firmware for XG-040G-MD**
-          ### 📒 固件信息(XG-040G-MD)
-          - 这是 XG-040G-MD 的专属构建
-          - 💻 目标分支：${{ env.REPO_BRANCH }}
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 🌐 默认地址: 192.168.1.1
-          - 🔑 默认密码: 无
-          ### 🧊 固件版本
-          - 固件内核版本：${{ env.VERSION_KERNEL }}
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.VERSION_INFO }}
+      - name: Upload test artifacts (no Release publication)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: XG-040G-MD-test-${{ github.run_number }}
+          path: |
+            openwrt/bin/targets/airoha/an7581/
+            build.config
+          if-no-files-found: warn
+          retention-days: 14
