@@ -102,9 +102,12 @@ jobs:
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
               echo "Selected: ${pkg}"
             else
-              echo "WARNING: ${pkg} is not selected or unavailable in this source tree"
+              echo "ERROR: required first-pass package ${pkg} is missing or was dropped by make defconfig"
+              exit 1
             fi
           done
+          echo "Kernel/container feature indicators (informational only):"
+          grep -E '^CONFIG_KERNEL_(CGROUPS|NAMESPACES|OVERLAY_FS|VETH|SECCOMP|CGROUP_BPF)' .config || true
           cp .config "$GITHUB_WORKSPACE/build.config"
           echo "Selected package count: $(grep -c '^CONFIG_PACKAGE_.*=y' .config || true)"
 
