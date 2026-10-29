@@ -16,6 +16,7 @@ The first-pass set includes:
 - LuCI Statistics and selected collectd modules.
 - Browser terminal (`luci-app-ttyd`).
 - SQM (`luci-app-sqm` and `sqm-scripts`).
+- Turbo ACC LuCI interface with generic nft flow-offloading option selected; Shortcut-FE/SFE and full-cone extras remain disabled.
 - HomeProxy, PassWall and OpenClash interfaces.
 - OpenClash's `dnsmasq-full` requirement; ordinary `dnsmasq` is intentionally deselected because both variants must not be selected together.
 
@@ -27,7 +28,7 @@ Installing multiple proxy interfaces does not mean all proxies should run at onc
 Not enabled in the first-pass config. The package name and its full dependency set must be validated against the selected 25.12 source. Its legacy iptables-oriented components can conflict with a firewall4/nftables build. Do not force-install it just to make the menu entry appear; test it in a separate profile after the first build passes.
 
 ### Turbo ACC
-Not enabled. The LuCI page alone does not provide kernel acceleration. SFE/shortcut-fe and similar components can require target-specific kernel patches and may not work with this Airoha kernel or firewall4. First validate the exact upstream patch set against the selected kernel and the target's networking stack. Do not enable undocumented acceleration flags.
+The LuCI interface is included, and the generic nft flow-offloading option is selected because the base config already selects `kmod-nft-offload`. Shortcut-FE/SFE, shortcut-fe driver modules and full-cone extras are explicitly disabled. This does not prove hardware offload works on this target; verify throughput, stability and NAT behavior after a successful test build, and disable flow offloading if it causes issues.
 
 ### Docker / containers
 Not enabled. Before adding Docker, verify kernel support for namespaces, cgroups, overlayfs, veth, seccomp and required netfilter features; then verify writable storage/extroot space. The device's 256 MB NAND is not all available for packages, and container images should not be stored in the firmware root filesystem. If the checks pass, test Docker as a separate optional build profile with external USB storage/extroot.
@@ -47,3 +48,4 @@ Not enabled. Before adding Docker, verify kernel support for namespaces, cgroups
 - The source has device-specific patches for two NAND variants, but a single image working on both variants is not proven by source inspection alone.
 - PassWall/OpenClash/HomeProxy can coexist as packages but can conflict at runtime if multiple services claim DNS interception, transparent proxying or firewall hooks.
 - The workflow intentionally uploads a test artifact rather than creating a GitHub Release.
+- The workflow has not been run in this change set; package availability and image size are not yet build-verified.
