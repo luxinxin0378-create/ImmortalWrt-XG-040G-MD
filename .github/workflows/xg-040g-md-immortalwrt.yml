@@ -10,6 +10,12 @@ on:
         type: choice
         options:
           - openwrt-25.12-XG-040G-MD
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/xg-040g-md-immortalwrt.yml"
+      - "config/xg-040g-md.config"
+      - "PLUGIN-INTEGRATION.md"
 
 permissions:
   contents: read
@@ -48,7 +54,7 @@ jobs:
 
       - name: Clone target source
         env:
-          REPO_BRANCH: ${{ inputs.repo_branch }}
+          REPO_BRANCH: ${{ inputs.repo_branch || 'openwrt-25.12-XG-040G-MD' }}
         run: |
           set -eux
           git clone --depth 1 "$REPO_URL" -b "$REPO_BRANCH" openwrt
@@ -84,6 +90,11 @@ jobs:
           test -f /tmp/turboacc/luci-app-turboacc/Makefile
           cp -a /tmp/turboacc/luci-app-turboacc package/custom/
 
+          # Add the Airoha NPU/CPU/Frame Engine status and management page.
+          git clone --depth 1 https://github.com/rchen14b/luci-app-airoha-npu.git /tmp/luci-app-airoha-npu
+          test -f /tmp/luci-app-airoha-npu/Makefile
+          cp -a /tmp/luci-app-airoha-npu package/custom/luci-app-airoha-npu
+
       - name: Update and install feeds
         run: |
           set -eux
@@ -103,7 +114,7 @@ jobs:
           grep -q '^CONFIG_TARGET_airoha=y' .config
           grep -q '^CONFIG_TARGET_airoha_an7581=y' .config
           grep -q '^CONFIG_TARGET_airoha_an7581_DEVICE_bell_xg-040g-md=y' .config
-          for pkg in qmodem luci-app-qmodem-next luci-app-adguardhome adguardhome luci-theme-argon luci-app-nlbwmon luci-app-statistics luci-app-ttyd luci-app-sqm luci-app-homeproxy luci-app-passwall luci-app-openclash luci-app-turboacc; do
+          for pkg in qmodem luci-app-qmodem-next luci-app-airoha-npu luci-app-adguardhome adguardhome luci-theme-argon luci-app-nlbwmon luci-app-statistics luci-app-ttyd luci-app-sqm luci-app-homeproxy luci-app-passwall luci-app-openclash luci-app-turboacc; do
             if grep -q "CONFIG_PACKAGE_${pkg}=y" .config; then
               echo "Selected: ${pkg}"
             else
