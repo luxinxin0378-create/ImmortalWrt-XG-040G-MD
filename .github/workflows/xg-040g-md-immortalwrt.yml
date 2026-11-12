@@ -32,9 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     steps:
-      - name: Checkout configuration repository
-        uses: actions/checkout@v4
-
       - name: Initialize build environment
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -51,6 +48,11 @@ jobs:
           swap-size-mb: 2048
           temp-reserve-mb: 100
           root-reserve-mb: 1024
+
+      # This action mounts a fresh filesystem over GITHUB_WORKSPACE. Checkout
+      # must happen after it, otherwise the config repository is erased.
+      - name: Checkout configuration repository
+        uses: actions/checkout@v4
 
       - name: Clone target source
         env:
