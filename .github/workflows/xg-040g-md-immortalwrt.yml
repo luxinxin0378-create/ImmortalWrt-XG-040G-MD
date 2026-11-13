@@ -107,6 +107,17 @@ jobs:
           ./scripts/feeds install -a -p passwall_packages
           ./scripts/feeds install -a -p passwall
 
+      - name: Disable stale Rust CI LLVM download
+        run: |
+          set -eux
+          cd "$OPENWRT_PATH"
+          RUST_MAKEFILE="feeds/packages/lang/rust/Makefile"
+          test -f "$RUST_MAKEFILE"
+          grep -Fq -- '--set=llvm.download-ci-llvm=true' "$RUST_MAKEFILE"
+          sed -i 's/--set=llvm.download-ci-llvm=true/--set=llvm.download-ci-llvm=false/' "$RUST_MAKEFILE"
+          grep -Fq -- '--set=llvm.download-ci-llvm=false' "$RUST_MAKEFILE"
+          ! grep -Fq -- '--set=llvm.download-ci-llvm=true' "$RUST_MAKEFILE"
+
       - name: Load device configuration and validate package symbols
         run: |
           set -eux
